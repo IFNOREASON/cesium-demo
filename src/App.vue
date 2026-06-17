@@ -78,40 +78,49 @@
                   v-show="!isCodeCollapsed" 
                   class="action-btn run-btn" 
                   @click="runCode"
-                  :title="运行代码"
+                  title="运行代码"
                 >
                   ▶ 运行
                 </button>
               </div>
             </div>
             
-            <div class="panel-body" v-show="!isCodeCollapsed">
-              <CodeEditor
-                v-model:code="currentCode"
-                @run="runCode"
-              />
-              
-              <div v-if="activeDemo.frameworks" class="frameworks-section">
-                <div class="frameworks-header">
-                  <span class="frameworks-title">框架集成参考</span>
-                </div>
-                <div class="framework-tabs">
-                  <button
-                    v-for="(code, framework) in activeDemo.frameworks"
-                    :key="framework"
-                    :class="['tab-btn', { active: activeFramework === framework }]"
-                    @click="activeFramework = framework"
-                  >
-                    {{ getFrameworkName(framework) }}
-                  </button>
-                </div>
-                <div v-if="activeFramework" class="framework-code">
-                  <pre><code>{{ activeDemo.frameworks[activeFramework] }}</code></pre>
-                  <button class="copy-btn" @click="copyFrameworkCode">
-                    复制
-                  </button>
+            <div class="panel-body-wrapper" v-show="!isCodeCollapsed">
+              <div class="panel-body">
+                <CodeEditor
+                  v-model:code="currentCode"
+                  @run="runCode"
+                />
+                
+                <div v-if="activeDemo.frameworks" class="frameworks-section">
+                  <div class="frameworks-header">
+                    <span class="frameworks-title">框架集成参考</span>
+                  </div>
+                  <div class="framework-tabs">
+                    <button
+                      v-for="(code, framework) in activeDemo.frameworks"
+                      :key="framework"
+                      :class="['tab-btn', { active: activeFramework === framework }]"
+                      @click="activeFramework = framework"
+                    >
+                      {{ getFrameworkName(framework) }}
+                    </button>
+                  </div>
+                  <div v-if="activeFramework" class="framework-code">
+                    <pre><code>{{ activeDemo.frameworks[activeFramework] }}</code></pre>
+                    <button class="copy-btn" @click="copyFrameworkCode">
+                      复制
+                    </button>
+                  </div>
                 </div>
               </div>
+              
+              <TerrainProfile
+                :visible="showProfilePanel"
+                :profile-data="profileData"
+                @close="handleProfileClose"
+                @point-hover="handleProfilePointHover"
+              />
             </div>
           </div>
           
@@ -123,6 +132,8 @@
               :code="currentCode"
               :layer-id="currentLayerId"
               @error="handleViewerError"
+              @profile-data="handleProfileData"
+              @highlight-point="handleHighlightPoint"
             />
           </div>
         </div>
@@ -136,10 +147,12 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import CesiumViewer from './components/CesiumViewer.vue'
 import CodeEditor from './components/CodeEditor.vue'
 import DemoList from './components/DemoList.vue'
+import TerrainProfile from './components/TerrainProfile.vue'
 import { demos } from './data/demos'
 import { mapLayers } from './types/layer'
 import type { Demo } from './types/demo'
 import type { MapLayer } from './types/layer'
+import type { ProfileData, TerrainPoint } from './types/spatial'
 
 // 状态管理
 const activeDemoId = ref(demos[0].id)
@@ -151,6 +164,11 @@ const isCodeCollapsed = ref(false)
 const currentLayerId = ref('arcgis-imagery')
 const showLayerPanel = ref(false)
 const codePanelWidth = ref(400)
+
+// 地形剖面相关状态
+const showProfilePanel = ref(false)
+const profileData = ref<ProfileData | null>(null)
+let highlightMarker: any = null
 
 // 调整大小相关
 const isResizing = ref(false)
@@ -191,6 +209,44 @@ const handleDemoSelect = (demoId: string) => {
     currentCode.value = demo.code
     errorMessage.value = null
     activeFramework.value = null
+    resetProfilePanel()
+  }
+}
+
+const resetProfilePanel = () => {
+  showProfilePanel.value = false
+  profileData.value = null
+  highlightMarker = null
+}
+
+const handleProfileData = (data: ProfileData) => {
+  profileData.value = data
+  showProfilePanel.value = true
+}
+
+const handleProfileClose = () => {
+  showProfilePanel.value = false
+}
+
+const handleProfilePointHover = (point: TerrainPoint | null) => {
+  emitHighlightPoint(point)
+}
+
+const handleHighlightPoint = (point: TerrainPoint | null) => {
+  if (point) {
+    emitHighlightPoint(point)
+  }
+}
+
+const emitHighlightPoint = (point: TerrainPoint | null) => {
+  if (point) {
+    const event = new CustomEvent('viewer:highlight-point', {
+      detail: { longitude: point.longitude, latitude: point.latitude }
+    })
+    window.dispatchEvent(event)
+  } else {
+    const event = new CustomEvent('viewer:clear-highlight')
+    window.dispatchEvent(event)
   }
 }
 
@@ -585,12 +641,21 @@ html, body, #app {
   background-color: #1177bb;
 }
 
+.panel-body-wrapper {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow: hidden;
+}
+
 .panel-body {
   flex: 1;
   display: flex;
   flex-direction: column;
   gap: 0;
   overflow: hidden;
+  min-height: 0;
 }
 
 /* Resize Handle */

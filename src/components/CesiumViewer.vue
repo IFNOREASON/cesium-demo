@@ -5,31 +5,31 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { getLayerById, type MapLayer } from '../types/layer'
+import { sampleTerrainAlongLine, createPolylineBetweenPoints, createPointMarker, createHighlightMarker } from '../utils/terrainAnalysis'
+import { computeViewshed, renderViewshed, createViewshedPicker } from '../utils/viewshedAnalysis'
+import { loadGeoJSON, setupDragAndDrop, enableTimeline, disableTimeline } from '../utils/geojsonLoader'
+import type { ProfileData, ViewshedOptions, ViewshedResult, GeoJSONLoadResult } from '../types/spatial'
 
-// 声明全局 Cesium 变量（通过 CDN 引入）
 declare const Cesium: any
 
-// 定义属性
 const props = defineProps<{
   code: string
   layerId?: string
 }>()
 
-// 定义事件
 const emit = defineEmits<{
   (e: 'error', error: Error): void
+  (e: 'profile-data', data: ProfileData): void
+  (e: 'highlight-point', point: any): void
 }>()
 
-// 容器引用
 const containerRef = ref<HTMLElement | null>(null)
 
-// Cesium 实例
 let viewer: any = null
-
-// 当前图层 ID
 let currentLayerId: string | null = null
+let highlightMarker: any = null
+let cleanupFunctions: Array<() => void> = []
 
-// 从 MapLayer 创建 ImageryProvider
 const createImageryProvider = (layer: MapLayer) => {
   const options: any = {
     url: layer.url,
@@ -37,7 +37,6 @@ const createImageryProvider = (layer: MapLayer) => {
     maximumLevel: layer.maximumLevel
   }
 
-  // 对于 CartoDB 图层，需要添加 subdomains
   if (layer.id.startsWith('cartodb')) {
     options.subdomains = ['a', 'b', 'c', 'd']
   }
@@ -45,47 +44,34 @@ const createImageryProvider = (layer: MapLayer) => {
   return new Cesium.UrlTemplateImageryProvider(options)
 }
 
-// 设置底图图层
 const setBaseLayer = (layerId: string) => {
   if (!viewer) return
 
-  // 如果已经是当前图层，不做任何操作
   if (currentLayerId === layerId) {
     return
   }
 
   try {
-    // 获取新图层配置
     const layerConfig = getLayerById(layerId)
-    
-    // 创建新的 imagery provider
     const newProvider = createImageryProvider(layerConfig)
 
-    // 记录当前图层数量
     const oldLayerCount = viewer.imageryLayers.length
-
-    // 先添加新图层到最底部
     const newLayer = viewer.imageryLayers.addImageryProvider(newProvider, 0)
     newLayer.show = true
 
-    // 等待新图层准备好后，移除旧图层
     if (newProvider.readyPromise) {
       newProvider.readyPromise.then(() => {
-        // 移除旧图层（从后往前移除，避免索引问题）
         while (viewer.imageryLayers.length > 1) {
           viewer.imageryLayers.remove(viewer.imageryLayers.get(viewer.imageryLayers.length - 1))
         }
         currentLayerId = layerId
       }).catch((error: any) => {
         console.warn('新图层加载失败，保留当前图层:', error)
-        // 如果新图层加载失败，移除新添加的图层
         if (viewer.imageryLayers.length > oldLayerCount) {
           viewer.imageryLayers.remove(newLayer)
         }
       })
     } else {
-      // 如果没有 readyPromise，直接切换
-      // 移除旧图层（从后往前移除）
       while (viewer.imageryLayers.length > 1) {
         viewer.imageryLayers.remove(viewer.imageryLayers.get(viewer.imageryLayers.length - 1))
       }
@@ -93,12 +79,10 @@ const setBaseLayer = (layerId: string) => {
     }
   } catch (error) {
     console.error('切换图层失败:', error)
-    // 确保至少有一个底图
     ensureBaseLayer()
   }
 }
 
-// 确保至少有一个底图
 const ensureBaseLayer = () => {
   if (!viewer) return
 
@@ -111,35 +95,91 @@ const ensureBaseLayer = () => {
   }
 }
 
-// 执行代码的函数
+const setupHighlightListeners = () => {
+  const handleHighlightPoint = (event: any) => {
+    const { longitude, latitude } = event.detail
+    if (highlightMarker) {
+      viewer.entities.remove(highlightMarker)
+    }
+    highlightMarker = createHighlightMarker(viewer, longitude, latitude)
+  }
+
+  const handleClearHighlight = () => {
+    if (highlightMarker) {
+      viewer.entities.remove(highlightMarker)
+      highlightMarker = null
+    }
+  }
+
+  window.addEventListener('viewer:highlight-point', handleHighlightPoint)
+  window.addEventListener('viewer:clear-highlight', handleClearHighlight)
+
+  cleanupFunctions.push(() => {
+    window.removeEventListener('viewer:highlight-point', handleHighlightPoint)
+    window.removeEventListener('viewer:clear-highlight', handleClearHighlight)
+  })
+}
+
 const executeCode = (code: string) => {
   if (!viewer) return
 
   try {
-    // 清理之前的实体
     viewer.entities.removeAll()
+    viewer.dataSources.removeAll()
+    if (highlightMarker) {
+      viewer.entities.remove(highlightMarker)
+      highlightMarker = null
+    }
 
-    // 确保底图存在
+    cleanupFunctions.forEach(fn => fn())
+    cleanupFunctions = []
+
     ensureBaseLayer()
+    setupHighlightListeners()
 
-    // 创建沙箱环境
+    const spatialUtils = {
+      sampleTerrainAlongLine: (startLon: number, startLat: number, endLon: number, endLat: number, count?: number) =>
+        sampleTerrainAlongLine(viewer, startLon, startLat, endLon, endLat, count),
+      createPolylineBetweenPoints: (startLon: number, startLat: number, endLon: number, endLat: number, color?: any, width?: number) =>
+        createPolylineBetweenPoints(viewer, startLon, startLat, endLon, endLat, color, width),
+      createPointMarker: (lon: number, lat: number, color?: any, label?: string) =>
+        createPointMarker(viewer, lon, lat, color, label),
+      computeViewshed: (options: ViewshedOptions) =>
+        computeViewshed(viewer, options),
+      renderViewshed: (result: ViewshedResult, obsLon: number, obsLat: number) =>
+        renderViewshed(viewer, result, obsLon, obsLat),
+      createViewshedPicker: (callback: (lon: number, lat: number) => void) =>
+        createViewshedPicker(viewer, callback),
+      loadGeoJSON: (geojson: any, options?: any) =>
+        loadGeoJSON(viewer, geojson, options),
+      setupDragAndDrop: (container: HTMLElement, onLoad: (result: GeoJSONLoadResult) => void, onError?: (error: Error) => void) => {
+        const cleanup = setupDragAndDrop(viewer, container, onLoad, onError)
+        cleanupFunctions.push(cleanup)
+        return cleanup
+      },
+      enableTimeline: () => enableTimeline(viewer),
+      disableTimeline: () => disableTimeline(viewer),
+      emitProfileData: (data: ProfileData) => emit('profile-data', data)
+    }
+
     const executeFunction = new Function(
       'viewer',
       'Cesium',
+      'spatialUtils',
+      'cleanupFunctions',
       `
       "use strict";
       ${code}
       `
     )
 
-    executeFunction(viewer, Cesium)
+    executeFunction(viewer, Cesium, spatialUtils, cleanupFunctions)
   } catch (error) {
     console.error('执行代码出错:', error)
     emit('error', error as Error)
   }
 }
 
-// 监听代码变化
 watch(
   () => props.code,
   (newCode) => {
@@ -149,7 +189,6 @@ watch(
   }
 )
 
-// 监听图层 ID 变化
 watch(
   () => props.layerId,
   (newLayerId) => {
@@ -162,40 +201,47 @@ watch(
 onMounted(() => {
   if (!containerRef.value) return
 
-  // 设置 Cesium 令牌（如果需要）
-  // Cesium.Ion.defaultAccessToken = 'your-token-here'
-
-  // 使用默认图层初始化 Viewer
   const defaultLayer = getLayerById(props.layerId || 'arcgis-imagery')
   const defaultProvider = createImageryProvider(defaultLayer)
 
-  // 初始化 Cesium Viewer
+  const terrainProvider = new Cesium.EllipsoidTerrainProvider()
+
   viewer = new Cesium.Viewer(containerRef.value, {
     baseLayerPicker: false,
     geocoder: false,
     homeButton: false,
     sceneModePicker: false,
     navigationHelpButton: false,
-    animation: false,
-    timeline: false,
+    animation: true,
+    timeline: true,
     fullscreenButton: false,
     vrButton: false,
     infoBox: false,
     selectionIndicator: false,
     baseLayer: new Cesium.ImageryLayer(defaultProvider),
+    terrainProvider: terrainProvider,
+    shouldAnimate: true
   })
 
-  // 记录当前图层
+  if (viewer.animation) {
+    viewer.animation.container.style.display = 'none'
+  }
+  if (viewer.timeline) {
+    viewer.timeline.container.style.display = 'none'
+  }
+
   currentLayerId = props.layerId || 'arcgis-imagery'
 
-  // 确保底图存在
   ensureBaseLayer()
+  setupHighlightListeners()
 
-  // 执行初始代码
   executeCode(props.code)
 })
 
 onUnmounted(() => {
+  cleanupFunctions.forEach(fn => fn())
+  cleanupFunctions = []
+
   if (viewer) {
     viewer.destroy()
     viewer = null
@@ -211,5 +257,10 @@ onUnmounted(() => {
 
 :deep(.cesium-viewer-bottom) {
   display: none;
+}
+
+:deep(.cesium-viewer-timelineContainer) {
+  left: 0 !important;
+  right: 0 !important;
 }
 </style>
