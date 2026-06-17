@@ -198,13 +198,11 @@ watch(
   }
 )
 
-onMounted(() => {
+onMounted(async () => {
   if (!containerRef.value) return
 
   const defaultLayer = getLayerById(props.layerId || 'arcgis-imagery')
   const defaultProvider = createImageryProvider(defaultLayer)
-
-  const terrainProvider = new Cesium.EllipsoidTerrainProvider()
 
   viewer = new Cesium.Viewer(containerRef.value, {
     baseLayerPicker: false,
@@ -219,7 +217,7 @@ onMounted(() => {
     infoBox: false,
     selectionIndicator: false,
     baseLayer: new Cesium.ImageryLayer(defaultProvider),
-    terrainProvider: terrainProvider,
+    terrainProvider: new Cesium.EllipsoidTerrainProvider(),
     shouldAnimate: true
   })
 
@@ -236,6 +234,15 @@ onMounted(() => {
   setupHighlightListeners()
 
   executeCode(props.code)
+
+  try {
+    console.log('正在加载世界地形数据...')
+    const worldTerrain = await Cesium.createWorldTerrainAsync()
+    viewer.terrainProvider = worldTerrain
+    console.log('世界地形数据加载完成')
+  } catch (error) {
+    console.warn('世界地形加载失败，使用默认椭球地形:', error)
+  }
 })
 
 onUnmounted(() => {

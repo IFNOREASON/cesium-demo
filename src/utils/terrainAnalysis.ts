@@ -2,6 +2,26 @@ import type { TerrainPoint, ProfileData } from '../types/spatial'
 
 declare const Cesium: any
 
+const waitForTerrainReady = async (terrainProvider: any): Promise<void> => {
+  if (terrainProvider.ready) return
+
+  if (terrainProvider.readyPromise) {
+    await terrainProvider.readyPromise
+    return
+  }
+
+  await new Promise<void>((resolve) => {
+    const checkReady = () => {
+      if (terrainProvider.ready) {
+        resolve()
+      } else {
+        requestAnimationFrame(checkReady)
+      }
+    }
+    checkReady()
+  })
+}
+
 export const sampleTerrainAlongLine = async (
   viewer: any,
   startLongitude: number,
@@ -11,6 +31,8 @@ export const sampleTerrainAlongLine = async (
   sampleCount: number = 100
 ): Promise<ProfileData> => {
   const terrainProvider = viewer.terrainProvider
+
+  await waitForTerrainReady(terrainProvider)
 
   const positions: any[] = []
   const step = 1 / (sampleCount - 1)

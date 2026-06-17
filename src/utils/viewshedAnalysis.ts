@@ -5,6 +5,26 @@ declare const Cesium: any
 const degToRad = (deg: number): number => (deg * Math.PI) / 180
 const radToDeg = (rad: number): number => (rad * 180) / Math.PI
 
+const waitForTerrainReady = async (terrainProvider: any): Promise<void> => {
+  if (terrainProvider.ready) return
+
+  if (terrainProvider.readyPromise) {
+    await terrainProvider.readyPromise
+    return
+  }
+
+  await new Promise<void>((resolve) => {
+    const checkReady = () => {
+      if (terrainProvider.ready) {
+        resolve()
+      } else {
+        requestAnimationFrame(checkReady)
+      }
+    }
+    checkReady()
+  })
+}
+
 export const computeViewshed = async (
   viewer: any,
   options: ViewshedOptions
@@ -21,6 +41,8 @@ export const computeViewshed = async (
   } = options
 
   const terrainProvider = viewer.terrainProvider
+  await waitForTerrainReady(terrainProvider)
+
   const scene = viewer.scene
   const globe = scene.globe
 
